@@ -10,6 +10,7 @@ that
 - Docker
 - [Tanka >= v0.9.2](https://github.com/grafana/tanka)
 - [k3d >= v1.5.1 < v3.0.0](https://github.com/rancher/k3d)
+- [yq](https://github.com/kislyuk/yq)
 
 ## Getting Started
 
