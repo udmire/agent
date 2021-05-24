@@ -22,7 +22,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
       with:
-        ref: '${{ github.events.inputs.tag }}'
+        ref: '${{ github.event.inputs.tag }}'
 
     - name: Test
       run: make test
@@ -37,7 +37,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
       with:
-        ref: '${{ github.events.inputs.tag }}'
+        ref: '${{ github.event.inputs.tag }}'
 
     - name: Login to Docker Hub
       run: docker login -u '${{ secrets.DOCKER_USER }}' -p '${{ secrets.DOCKER_PASS }}'
@@ -63,7 +63,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
       with:
-        ref: '${{ github.events.inputs.tag }}'
+        ref: '${{ github.event.inputs.tag }}'
 
     - name: Login to Docker Hub
       run: docker login -u '${{ secrets.DOCKER_USER }}' -p '${{ secrets.DOCKER_PASS }}'
@@ -103,7 +103,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
       with:
-        ref: '${{ github.events.inputs.tag }}'
+        ref: '${{ github.event.inputs.tag }}'
 
     - name: Make Release
       env:
