@@ -243,6 +243,11 @@ func TestLabels(t *testing.T) {
 	}{
 		{
 			Labels: []string{"loki", "svc", ""},
+			KeyValues: []interface{}{"loki", "loki", "svc", "gateway", "duration", "1s"},
+			ExpectedLabels: map[model.LabelName]model.LabelValue{
+				"loki": "loki",
+				"svc": "gateway",
+			},
 		},
 	}
 
