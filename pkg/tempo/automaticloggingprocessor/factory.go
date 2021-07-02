@@ -32,7 +32,6 @@ type AutomaticLoggingConfig struct {
 	Overrides         OverrideConfig `mapstructure:"overrides" yaml:"overrides"`
 	Timeout           time.Duration  `mapstructure:"timeout" yaml:"timeout"`
 	Labels            []string       `mapstructure:"labels" yaml:"labels"`
-	// ConstLabels       map[string]string       `mapstructure:"const_labels" yaml:"const_labels"`
 }
 
 // OverrideConfig contains overrides for various strings
