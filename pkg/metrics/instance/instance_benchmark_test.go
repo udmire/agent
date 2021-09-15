@@ -22,10 +22,10 @@ import (
 )
 
 func BenchmarkAddingConfigs(b *testing.B) {
-	BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-100.txt", "/home/mdurham/utils/logs/benchmarklog-100.pprof", 100)
+	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-100.txt", "/home/mdurham/utils/logs/benchmarklog-100.pprof", 100)
 	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-1000.txt", "/home/mdurham/utils/logs/benchmarklog-1000.pprof", 1_000)
 	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-2000.txt", 2_000)
-	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-4000.txt", 4_000)
+	BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-4000.txt", "/home/mdurham/utils/logs/benchmarklog-4000.pprof", 4_000)
 }
 
 func BenchmarkingConfigs(file string, profile string, iterations int) {
@@ -51,9 +51,7 @@ func BenchmarkingConfigs(file string, profile string, iterations int) {
 	if err != nil {
 		level.Error(logger).Log("err", err)
 	}
-	groupManager := NewGroupManager(modalManager)
 	// Occasionally a manager will throw an error if there isnt a slight delay
-	time.Sleep(100 * time.Millisecond)
 	sb.WriteString("id, time in ms \n")
 	for i := 0; i < iterations; i++ {
 		globalConfig := getBenchmarkGlobalConfig()
@@ -61,14 +59,13 @@ func BenchmarkingConfigs(file string, profile string, iterations int) {
 		cfg.WALTruncateFrequency = time.Hour
 		cfg.RemoteFlushDeadline = time.Hour
 		start := time.Now()
-		err := groupManager.ApplyConfig(cfg)
+		err := modalManager.ApplyConfig(cfg)
 		duration := time.Since(start)
 		sb.WriteString(fmt.Sprintf("%d , %d \n", i, duration/time.Millisecond))
 		if err != nil {
 			logger.Log("err", err)
 		}
 	}
-	groupManager.Stop()
 	modalManager.Stop()
 	basicManager.Stop()
 
