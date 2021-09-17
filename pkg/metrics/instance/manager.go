@@ -50,6 +50,9 @@ type Manager interface {
 	// one with Config.Name already exists.
 	ApplyConfig(Config) error
 
+	// ApplyConfigs batch applies the config
+	ApplyConfigs([]Config) error
+
 	// DeleteConfig deletes a given managed instance based on its Config.Name.
 	DeleteConfig(name string) error
 
@@ -87,6 +90,13 @@ type BasicManager struct {
 	processes map[string]*managedProcess
 
 	launch Factory
+}
+
+func (m *BasicManager) ApplyConfigs(configs []Config) error {
+	for _, k := range configs {
+		m.ApplyConfig(k)
+	}
+	return nil
 }
 
 // managedProcess represents a goroutine running a ManagedInstance. cancel
@@ -321,6 +331,13 @@ type MockManager struct {
 	ApplyConfigFunc   func(Config) error
 	DeleteConfigFunc  func(name string) error
 	StopFunc          func()
+}
+
+func (m MockManager) ApplyConfigs(configs []Config) error {
+	for _, k := range configs {
+		m.ApplyConfig(k)
+	}
+	return nil
 }
 
 // GetInstance implements Manager.

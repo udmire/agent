@@ -6,7 +6,7 @@ import (
 
 // checkUnique validates that cfg is unique from all, ensuring that no two
 // configs share a job_name.
-func checkUnique(all <-chan instance.Config, cfg *instance.Config) error {
+func checkUnique(all <-chan []*instance.Config, cfg *instance.Config) error {
 	defer func() {
 		// Drain the channel, which is necessary if we're returning an error.
 		for range all {
@@ -18,7 +18,8 @@ func checkUnique(all <-chan instance.Config, cfg *instance.Config) error {
 		newJobNames[sc.JobName] = struct{}{}
 	}
 
-	for otherConfig := range all {
+	cfgs := <-all
+	for _, otherConfig := range cfgs {
 		// If the other config is the one we're validating, skip it.
 		if otherConfig.Name == cfg.Name {
 			continue

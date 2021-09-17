@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 
+	"gopkg.in/yaml.v2"
+
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/gorilla/mux"
@@ -63,6 +65,7 @@ func (api *API) WireAPI(r *mux.Router) {
 	r = r.UseEncodedPath()
 
 	r.HandleFunc("/agent/api/v1/configs", api.ListConfigurations).Methods("GET")
+	r.HandleFunc("/agent/api/v1/configs", api.ListConfigurations).Methods("POST")
 	r.HandleFunc("/agent/api/v1/configs/{name}", api.GetConfiguration).Methods("GET")
 	r.HandleFunc("/agent/api/v1/config/{name}", api.PutConfiguration).Methods("PUT", "POST")
 	r.HandleFunc("/agent/api/v1/config/{name}", api.DeleteConfiguration).Methods("DELETE")
@@ -100,6 +103,76 @@ func (api *API) ListConfigurations(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	api.writeResponse(rw, http.StatusOK, configapi.ListConfigurationsResponse{Configs: keys})
+}
+
+type BulkUploadConfig struct {
+	Name   string `yaml:"name"`
+	Config string `yaml:"config"`
+}
+
+// UploadBulkConfigurations bulks uploads a list of configurations
+func (api *API) UploadBulkConfigurations(rw http.ResponseWriter, r *http.Request) {
+	api.storeMut.Lock()
+	defer api.storeMut.Unlock()
+	if api.store == nil {
+		api.writeError(rw, http.StatusNotFound, fmt.Errorf("no config store running"))
+		return
+	}
+	var body []byte
+	_, err := r.Body.Read(body)
+	if err != nil {
+		api.writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	var configs []BulkUploadConfig
+	err = yaml.Unmarshal(body, configs)
+	if err != nil {
+		api.writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	for _, configEntry := range configs {
+
+		cfg, err := instance.UnmarshalConfig(strings.NewReader(configEntry.Config))
+		if err != nil {
+			api.writeError(rw, http.StatusBadRequest, fmt.Errorf("could not unmarshal config: %w", err))
+			return
+		}
+		cfg.Name = configEntry.Name
+
+		if api.validator != nil {
+			validateCfg, err := instance.UnmarshalConfig(strings.NewReader(configEntry.Config))
+			if err != nil {
+				api.writeError(rw, http.StatusBadRequest, fmt.Errorf("could not unmarshal config: %w", err))
+				return
+			}
+			validateCfg.Name = cfg.Name
+
+			if err := api.validator(validateCfg); err != nil {
+				api.writeError(rw, http.StatusBadRequest, fmt.Errorf("failed to validate config: %w", err))
+				return
+			}
+			created, err := api.store.Put(r.Context(), *cfg)
+			switch {
+			case errors.Is(err, ErrNotConnected):
+				api.writeError(rw, http.StatusNotFound, err)
+				return
+			case errors.As(err, &NotUniqueError{}):
+				api.writeError(rw, http.StatusBadRequest, err)
+				return
+			case err != nil:
+				api.writeError(rw, http.StatusInternalServerError, err)
+				return
+			default:
+				if created {
+					api.totalCreatedConfigs.Inc()
+				} else {
+					api.totalUpdatedConfigs.Inc()
+				}
+			}
+		}
+	}
+	api.writeResponse(rw, http.StatusOK, nil)
+
 }
 
 // GetConfiguration gets an individual configuration.

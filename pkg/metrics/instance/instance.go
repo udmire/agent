@@ -525,7 +525,99 @@ func (i *Instance) Update(c Config) (err error) {
 	for _, v := range c.ScrapeConfigs {
 		sdConfigs[v.JobName] = v.ServiceDiscoveryConfigs
 	}
+	// MRD here is the entry point from out system
 	err = i.discovery.Manager.ApplyConfig(sdConfigs)
+	if err != nil {
+		return fmt.Errorf("failed applying configs to discovery manager: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateConfigs batch applies configurations
+func (i *Instance) UpdateConfigs(configs []Config) (err error) {
+	i.mut.Lock()
+	defer i.mut.Unlock()
+	discoveryConfigs := make(map[string]discovery.Configs, 0)
+	for _, c := range configs {
+		// It's only (currently) valid to update scrape_configs and remote_write, so
+		// if any other field has changed here, return the error.
+		switch {
+		// This first case should never happen in practice but it's included here for
+		// completions sake.
+		case i.cfg.Name != c.Name:
+			err = errImmutableField{Field: "name"}
+		case i.cfg.HostFilter != c.HostFilter:
+			err = errImmutableField{Field: "host_filter"}
+		case i.cfg.WALTruncateFrequency != c.WALTruncateFrequency:
+			err = errImmutableField{Field: "wal_truncate_frequency"}
+		case i.cfg.RemoteFlushDeadline != c.RemoteFlushDeadline:
+			err = errImmutableField{Field: "remote_flush_deadline"}
+		case i.cfg.WriteStaleOnShutdown != c.WriteStaleOnShutdown:
+			err = errImmutableField{Field: "write_stale_on_shutdown"}
+		}
+		if err != nil {
+			return ErrInvalidUpdate{Inner: err}
+		}
+
+		// Check to see if the components exist yet.
+		if i.discovery == nil || i.remoteStore == nil || i.readyScrapeManager == nil {
+			return ErrInvalidUpdate{
+				Inner: fmt.Errorf("cannot dynamically update because instance is not running"),
+			}
+		}
+
+		// NOTE(rfratto): Prometheus applies configs in a specific order to ensure
+		// flow from service discovery down to the WAL continues working properly.
+		//
+		// Keep the following order below:
+		//
+		// 1. Local config
+		// 2. Remote Store
+		// 3. Scrape Manager
+		// 4. Discovery Manager
+
+		originalConfig := i.cfg
+		defer func() {
+			if err != nil {
+				i.cfg = originalConfig
+			}
+		}()
+		i.cfg = c
+
+		i.hostFilter.SetRelabels(c.HostFilterRelabelConfigs)
+		if c.HostFilter {
+			// N.B.: only call PatchSD if HostFilter is enabled since it
+			// mutates what targets will be discovered.
+			i.hostFilter.PatchSD(c.ScrapeConfigs)
+		}
+
+		err = i.remoteStore.ApplyConfig(&config.Config{
+			GlobalConfig:       c.global.Prometheus,
+			RemoteWriteConfigs: c.RemoteWrite,
+		})
+		if err != nil {
+			return fmt.Errorf("error applying new remote_write configs: %w", err)
+		}
+
+		sm, err := i.readyScrapeManager.Get()
+		if err != nil {
+			return fmt.Errorf("couldn't get scrape manager to apply new scrape configs: %w", err)
+		}
+		err = sm.ApplyConfig(&config.Config{
+			GlobalConfig:  c.global.Prometheus,
+			ScrapeConfigs: c.ScrapeConfigs,
+		})
+		if err != nil {
+			return fmt.Errorf("error applying updated configs to scrape manager: %w", err)
+		}
+
+		for _, v := range c.ScrapeConfigs {
+			discoveryConfigs[v.JobName] = v.ServiceDiscoveryConfigs
+		}
+	}
+	// MRD here is the entry point from out system
+	err = i.discovery.Manager.ApplyConfig(discoveryConfigs)
 	if err != nil {
 		return fmt.Errorf("failed applying configs to discovery manager: %w", err)
 	}

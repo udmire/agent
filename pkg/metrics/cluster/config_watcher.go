@@ -91,7 +91,9 @@ func (w *configWatcher) ApplyConfig(cfg Config) error {
 
 func (w *configWatcher) run(ctx context.Context) {
 	defer level.Info(w.log).Log("msg", "config watcher run loop exiting")
-
+	// Run a refresh on running, this is likely better than relying on the config watcher for lots of items
+	//time.Sleep(10 * time.Second)
+	//w.RequestRefresh()
 	lastReshard := time.Now()
 
 	for {
@@ -108,10 +110,8 @@ func (w *configWatcher) run(ctx context.Context) {
 				level.Error(w.log).Log("msg", "refresh failed", "err", err)
 			}
 		case ev := <-w.store.Watch():
-			level.Debug(w.log).Log("msg", "handling event from config store")
-			if err := w.handleEvent(ev); err != nil {
-				level.Error(w.log).Log("msg", "failed to handle changed or deleted config", "key", ev.Key, "err", err)
-			}
+			level.Debug(w.log).Log("msg", "handling events from config store")
+			w.handleEvents(ev.Events)
 		}
 	}
 }
@@ -214,15 +214,13 @@ Outer:
 			if !ok {
 				break Outer
 			}
-
-			if err := w.handleEvent(configstore.WatchEvent{Key: cfg.Name, Config: &cfg}); err != nil {
-				level.Error(w.log).Log("msg", "failed to process changed config", "key", cfg.Name, "err", err)
-				if firstError == nil {
-					firstError = err
-				}
+			events := make([]configstore.WatchEvent, 0)
+			for _, c := range cfg {
+				events = append(events, configstore.WatchEvent{Key: c.Name, Config: c})
+				keys[c.Name] = struct{}{}
 			}
+			w.handleEvents(events)
 
-			keys[cfg.Name] = struct{}{}
 		}
 	}
 
@@ -304,6 +302,70 @@ func (w *configWatcher) handleEvent(ev configstore.WatchEvent) error {
 		}
 		w.instances[ev.Key] = struct{}{}
 	}
+	return nil
+}
+
+func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) error {
+	w.mut.Lock()
+	defer w.mut.Unlock()
+
+	if w.stopped {
+		return fmt.Errorf("configWatcher stopped")
+	}
+
+	w.instanceMut.Lock()
+	defer w.instanceMut.Unlock()
+
+	ownedConfigs := make([]instance.Config, 0)
+	for _, ev := range evs {
+		owned, err := w.owns(ev.Key)
+		if err != nil {
+			level.Error(w.log).Log("msg", "failed to see if config is owned. instance will be deleted if it is running", "err", err)
+		}
+
+		var (
+			_, isRunning = w.instances[ev.Key]
+			isDeleted    = ev.Config == nil
+		)
+
+		switch {
+		// Two deletion scenarios:
+		// 1. A config we're running got moved to a new owner.
+		// 2. A config we're running got deleted
+		case (isRunning && !owned) || (isDeleted && isRunning):
+			if isDeleted {
+				level.Info(w.log).Log("msg", "untracking deleted config", "key", ev.Key)
+			} else {
+				level.Info(w.log).Log("msg", "untracking config that changed owners", "key", ev.Key)
+			}
+
+			err := w.im.DeleteConfig(ev.Key)
+			delete(w.instances, ev.Key)
+			if err != nil {
+				return fmt.Errorf("failed to delete: %w", err)
+			}
+
+		case !isDeleted && owned:
+			if err := w.validate(ev.Config); err != nil {
+				return fmt.Errorf(
+					"failed to validate config. %[1]s cannot run until the global settings are adjusted or the config is adjusted to operate within the global constraints. error: %[2]w",
+					ev.Key, err,
+				)
+			}
+
+			if _, exist := w.instances[ev.Key]; !exist {
+				level.Info(w.log).Log("msg", "tracking new config", "key", ev.Key)
+			}
+
+			ownedConfigs = append(ownedConfigs, *ev.Config)
+			w.instances[ev.Key] = struct{}{}
+		}
+	}
+	level.Info(w.log).Log("msg", "starting apply configs")
+	if err := w.im.ApplyConfigs(ownedConfigs); err != nil {
+		return fmt.Errorf("failed to apply config: %w", err)
+	}
+	level.Info(w.log).Log("msg", "ending apply configs")
 
 	return nil
 }

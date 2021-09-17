@@ -189,7 +189,9 @@ func TestRemote_All(t *testing.T) {
 
 	var gotConfigs []string
 	for gotConfig := range configCh {
-		gotConfigs = append(gotConfigs, gotConfig.Name)
+		for _, singleConfig := range gotConfig {
+			gotConfigs = append(gotConfigs, singleConfig.Name)
+		}
 	}
 	sort.Strings(gotConfigs)
 

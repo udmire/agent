@@ -68,6 +68,28 @@ type ModalManager struct {
 	wrapped, active Manager
 }
 
+func (m *ModalManager) ApplyConfigs(configs []Config) error {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+
+	if err := m.active.ApplyConfigs(configs); err != nil {
+		return err
+	}
+
+	for _, c := range configs {
+		if _, existingConfig := m.configs[c.Name]; !existingConfig {
+			m.currentActiveConfigs.Inc()
+			m.changedConfigs.WithLabelValues("created").Inc()
+		} else {
+			m.changedConfigs.WithLabelValues("updated").Inc()
+		}
+
+		m.configs[c.Name] = c
+	}
+
+	return nil
+}
+
 // NewModalManager creates a new ModalManager.
 func NewModalManager(reg prometheus.Registerer, l log.Logger, next Manager, mode Mode) (*ModalManager, error) {
 	changedConfigs := promauto.With(reg).NewGaugeVec(prometheus.GaugeOpts{

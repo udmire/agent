@@ -27,7 +27,7 @@ type Store interface {
 	// All retrieves the entire list of instance configs currently
 	// in the store. A filtering "keep" function can be provided to ignore some
 	// configs, which can significantly speed up the operation in some cases.
-	All(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error)
+	All(ctx context.Context, keep func(key string) bool) (<-chan []*instance.Config, error)
 
 	// Watch watches for changed instance Configs.
 	// All callers of Watch receive the same Channel.
@@ -35,7 +35,7 @@ type Store interface {
 	// It is not guaranteed that Watch will emit all store events, and Watch
 	// should only be used for best-effort quick convergence with the remote
 	// store. Watch should always be paired with polling All.
-	Watch() <-chan WatchEvent
+	Watch() <-chan WatchBundle
 
 	// Close closes the store.
 	Close() error
@@ -46,4 +46,8 @@ type Store interface {
 type WatchEvent struct {
 	Key    string
 	Config *instance.Config
+}
+
+type WatchBundle struct {
+	Events []WatchEvent
 }

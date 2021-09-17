@@ -2,7 +2,6 @@ package configstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -42,22 +41,14 @@ type Remote struct {
 	reg *util.Unregisterer
 
 	kvMut    sync.RWMutex
-	kv       *agentRemoteClient
+	kv       *RemoteClient
 	reloadKV chan struct{}
 
 	cancelCtx  context.Context
 	cancelFunc context.CancelFunc
 
 	configsMut sync.Mutex
-	configsCh  chan WatchEvent
-}
-
-// agentRemoteClient is a simple wrapper to allow the shortcircuit of consul, while being backwards compatible with non
-// consul kv stores
-type agentRemoteClient struct {
-	kv.Client
-	consul *api.Client
-	config kv.Config
+	configsCh  chan WatchBundle
 }
 
 // NewRemote creates a new Remote store that uses a Key-Value client to store
@@ -76,7 +67,7 @@ func NewRemote(l log.Logger, reg prometheus.Registerer, cfg kv.Config, enable bo
 		cancelCtx:  cancelCtx,
 		cancelFunc: cancelFunc,
 
-		configsCh: make(chan WatchEvent),
+		configsCh: make(chan WatchBundle),
 	}
 	if err := r.ApplyConfig(cfg, enable); err != nil {
 		return nil, fmt.Errorf("failed to apply config for config store: %w", err)
@@ -136,10 +127,11 @@ func (r *Remote) setClient(client kv.Client, consulClient *api.Client, config kv
 	if client == nil && consulClient == nil {
 		r.kv = nil
 	} else {
-		r.kv = &agentRemoteClient{
+		r.kv = &RemoteClient{
 			Client: client,
 			consul: consulClient,
 			config: config,
+			log:    r.log,
 		}
 	}
 	r.reloadKV <- struct{}{}
@@ -174,36 +166,55 @@ Outer:
 	}
 }
 
-func (r *Remote) watchKV(ctx context.Context, client *agentRemoteClient) {
+func (r *Remote) watchKV(ctx context.Context, client *RemoteClient) {
 	// Edge case: client was unset, nothing to do here.
 	if client == nil {
 		level.Info(r.log).Log("msg", "not watching the KV, none set")
 		return
 	}
 
-	client.WatchPrefix(ctx, "", func(key string, v interface{}) bool {
-		if ctx.Err() != nil {
-			return false
-		}
-
-		r.configsMut.Lock()
-		defer r.configsMut.Unlock()
-
-		switch {
-		case v == nil:
-			r.configsCh <- WatchEvent{Key: key, Config: nil}
-		default:
-			cfg, err := instance.UnmarshalConfig(strings.NewReader(v.(string)))
-			if err != nil {
-				level.Error(r.log).Log("msg", "could not unmarshal config from store", "name", key, "err", err)
-				break
+	if client.consul != nil {
+		client.WatchEventsConsul("", ctx, func(bundle WatchBundle) bool {
+			if ctx.Err() != nil {
+				return false
 			}
 
-			r.configsCh <- WatchEvent{Key: key, Config: cfg}
-		}
+			r.configsMut.Lock()
+			defer r.configsMut.Unlock()
 
-		return true
-	})
+			switch {
+			case len(bundle.Events) > 0:
+				r.configsCh <- bundle
+			}
+
+			return true
+		})
+
+	} else {
+		client.WatchPrefix(ctx, "", func(key string, v interface{}) bool {
+			if ctx.Err() != nil {
+				return false
+			}
+
+			r.configsMut.Lock()
+			defer r.configsMut.Unlock()
+
+			switch {
+			case v == nil:
+				r.configsCh <- WatchBundle{Events: []WatchEvent{WatchEvent{Key: key, Config: nil}}}
+			default:
+				cfg, err := instance.UnmarshalConfig(strings.NewReader(v.(string)))
+				if err != nil {
+					level.Error(r.log).Log("msg", "could not unmarshal config from store", "name", key, "err", err)
+					break
+				}
+
+				r.configsCh <- WatchBundle{Events: []WatchEvent{WatchEvent{Key: key, Config: cfg}}}
+			}
+
+			return true
+		})
+	}
 }
 
 // List returns the list of all configs in the KV store.
@@ -215,38 +226,6 @@ func (r *Remote) List(ctx context.Context) ([]string, error) {
 	}
 
 	return r.kv.List(ctx, "")
-}
-
-// listConsul returns Key Value Pairs instead of []string
-func (r *Remote) listConsul(ctx context.Context) (api.KVPairs, error) {
-	if r.kv == nil {
-		return nil, ErrNotConnected
-	}
-
-	var pairs api.KVPairs
-	options := &api.QueryOptions{
-		AllowStale:        !r.kv.config.Consul.ConsistentReads,
-		RequireConsistent: r.kv.config.Consul.ConsistentReads,
-	}
-	// This is copied from cortex list so that stats stay the same
-	err := instrument.CollectedRequest(ctx, "List", consulRequestDuration, instrument.ErrorCode, func(ctx context.Context) error {
-		var err error
-		pairs, _, err = r.kv.consul.KV().List(r.kv.config.Prefix, options.WithContext(ctx))
-		return err
-	})
-
-	if err != nil {
-		return nil, err
-	}
-	// This mirrors the previous behavior of returning a blank array as opposed to nil.
-	if pairs == nil {
-		blankPairs := make(api.KVPairs, 0)
-		return blankPairs, nil
-	}
-	for _, kvp := range pairs {
-		kvp.Key = strings.TrimPrefix(kvp.Key, r.kv.config.Prefix)
-	}
-	return pairs, nil
 }
 
 // Get retrieves an individual config from the KV store.
@@ -335,14 +314,14 @@ func (r *Remote) Delete(ctx context.Context, key string) error {
 }
 
 // All retrieves the set of all configs in the store.
-func (r *Remote) All(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error) {
+func (r *Remote) All(ctx context.Context, keep func(key string) bool) (<-chan []*instance.Config, error) {
 	r.kvMut.RLock()
 	defer r.kvMut.RUnlock()
 	return r.all(ctx, keep)
 }
 
 // all can only be called if the kvMut lock is already held.
-func (r *Remote) all(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error) {
+func (r *Remote) all(ctx context.Context, keep func(key string) bool) (<-chan []*instance.Config, error) {
 	if r.kv == nil {
 		return nil, ErrNotConnected
 	}
@@ -352,60 +331,13 @@ func (r *Remote) all(ctx context.Context, keep func(key string) bool) (<-chan in
 	//	then ran a goroutine to get each individual value from consul. In situations with an extremely large number of
 	//	configs this overloaded the consul instances. This reduces that to one call, that was being made anyways.
 	if r.kv.consul != nil {
-		return r.allConsul(ctx, keep)
+		return r.kv.AllConsul(ctx, keep)
 	}
 	return r.allOther(ctx, keep)
 
 }
 
-// allConsul is ONLY usable when consul is the keystore. This is a performance improvement in using the client directly
-//	instead of the cortex multi store kv interface. That interface returns the list then each value must be retrieved
-//	individually. This returns all the keys and values in one call and works on them in memory
-func (r *Remote) allConsul(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error) {
-	if r.kv.consul == nil {
-		level.Error(r.log).Log("err", "allConsul called but consul client nil")
-		return nil, errors.New("allConsul called but consul client nil")
-	}
-	var configs []*instance.Config
-	c := GetCodec()
-
-	pairs, err := r.listConsul(ctx)
-
-	if err != nil {
-		return nil, err
-	}
-	for _, kvp := range pairs {
-		if keep != nil && !keep(kvp.Key) {
-			level.Debug(r.log).Log("msg", "skipping key that was filtered out", "key", kvp.Key)
-			continue
-		}
-		value, err := c.Decode(kvp.Value)
-		if err != nil {
-			level.Error(r.log).Log("msg", "failed to decode config from store", "key", kvp.Key, "err", err)
-			continue
-		}
-		if value == nil {
-			// Config was deleted since we called list, skip it.
-			level.Debug(r.log).Log("msg", "skipping key that was deleted after list was called", "key", kvp.Key)
-			continue
-		}
-
-		cfg, err := instance.UnmarshalConfig(strings.NewReader(value.(string)))
-		if err != nil {
-			level.Error(r.log).Log("msg", "failed to unmarshal config from store", "key", kvp.Key, "err", err)
-			continue
-		}
-		configs = append(configs, cfg)
-	}
-	ch := make(chan instance.Config, len(configs))
-	for _, cfg := range configs {
-		ch <- *cfg
-	}
-	close(ch)
-	return ch, nil
-}
-
-func (r *Remote) allOther(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error) {
+func (r *Remote) allOther(ctx context.Context, keep func(key string) bool) (<-chan []*instance.Config, error) {
 	if r.kv == nil {
 		return nil, ErrNotConnected
 	}
@@ -415,7 +347,7 @@ func (r *Remote) allOther(ctx context.Context, keep func(key string) bool) (<-ch
 		return nil, fmt.Errorf("failed to list configs: %w", err)
 	}
 
-	ch := make(chan instance.Config)
+	ch := make(chan []*instance.Config)
 
 	var wg sync.WaitGroup
 	wg.Add(len(keys))
@@ -423,41 +355,39 @@ func (r *Remote) allOther(ctx context.Context, keep func(key string) bool) (<-ch
 		wg.Wait()
 		close(ch)
 	}()
-
+	configs := make([]*instance.Config, 0)
 	for _, key := range keys {
-		go func(key string) {
-			defer wg.Done()
 
-			if keep != nil && !keep(key) {
-				level.Debug(r.log).Log("msg", "skipping key that was filtered out", "key", key)
-				return
-			}
+		if keep != nil && !keep(key) {
+			level.Debug(r.log).Log("msg", "skipping key that was filtered out", "key", key)
+			continue
+		}
 
-			// TODO(rfratto): retries might be useful here
-			v, err := r.kv.Get(ctx, key)
-			if err != nil {
-				level.Error(r.log).Log("msg", "failed to get config with key", "key", key, "err", err)
-				return
-			} else if v == nil {
-				// Config was deleted since we called list, skip it.
-				level.Debug(r.log).Log("msg", "skipping key that was deleted after list was called", "key", key)
-				return
-			}
+		// TODO(rfratto): retries might be useful here
+		v, err := r.kv.Get(ctx, key)
+		if err != nil {
+			level.Error(r.log).Log("msg", "failed to get config with key", "key", key, "err", err)
+			continue
+		} else if v == nil {
+			// Config was deleted since we called list, skip it.
+			level.Debug(r.log).Log("msg", "skipping key that was deleted after list was called", "key", key)
+			continue
+		}
 
-			cfg, err := instance.UnmarshalConfig(strings.NewReader(v.(string)))
-			if err != nil {
-				level.Error(r.log).Log("msg", "failed to unmarshal config from store", "key", key, "err", err)
-				return
-			}
-			ch <- *cfg
-		}(key)
+		cfg, err := instance.UnmarshalConfig(strings.NewReader(v.(string)))
+		if err != nil {
+			level.Error(r.log).Log("msg", "failed to unmarshal config from store", "key", key, "err", err)
+			continue
+		}
+		configs = append(configs, cfg)
 	}
+	ch <- configs
 
 	return ch, nil
 }
 
 // Watch watches the Store for changes.
-func (r *Remote) Watch() <-chan WatchEvent {
+func (r *Remote) Watch() <-chan WatchBundle {
 	return r.configsCh
 }
 

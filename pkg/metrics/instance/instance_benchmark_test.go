@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/go-kit/log/level"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -22,23 +24,41 @@ import (
 )
 
 func BenchmarkAddingConfigs(b *testing.B) {
-	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-100.txt", "/home/mdurham/utils/logs/benchmarklog-100.pprof", 100)
-	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-1000.txt", "/home/mdurham/utils/logs/benchmarklog-1000.pprof", 1_000)
-	// BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-2000.txt", 2_000)
-	BenchmarkingConfigs("/home/mdurham/utils/logs/benchmarklog-4000.txt", "/home/mdurham/utils/logs/benchmarklog-4000.pprof", 4_000)
+	tt := []struct {
+		numConfigs, numJobs int
+	}{
+		//{100, 1},
+		{1000, 1},
+		// {2000, 1},
+	}
+
+	for _, tc := range tt {
+		name := fmt.Sprintf("%d_configs_%d_jobs", tc.numConfigs, tc.numJobs)
+		b.Run(name, func(b *testing.B) {
+			output := fmt.Sprintf("/home/mdurham/utils/logs/benchmarklog-%d.txt", tc.numConfigs)
+			profile := fmt.Sprintf("/home/mdurham/utils/logs/benchmarklog-%d.pprof", tc.numConfigs)
+			//benchmarkingConfigs(b, output, profile, tc.numConfigs)
+			benchmarkingBulkConfigs(b, output, profile, tc.numConfigs)
+		})
+	}
 }
 
-func BenchmarkingConfigs(file string, profile string, iterations int) {
-	os.RemoveAll(profile)
-	profileio, err := os.Create(profile)
+func benchmarkingConfigs(b *testing.B, file string, profile string, iterations int) {
+	err := os.RemoveAll(profile)
 	if err != nil {
 		return
 	}
-	pprof.StartCPUProfile(profileio)
+	profileio, err := os.Create(profile)
+	require.NoError(b, err)
+	err = pprof.StartCPUProfile(profileio)
+	require.NoError(b, err)
 	defer pprof.StopCPUProfile()
 	var sb = strings.Builder{}
 	walDir, _ := ioutil.TempDir(os.TempDir(), "wal*")
-	defer os.RemoveAll(walDir)
+	b.Cleanup(func() {
+		os.RemoveAll(walDir)
+		require.NoError(b, err)
+	})
 	logger := log.NewNopLogger()
 	testServer, closeFunc, _ := getBenchmarkServer()
 	defer closeFunc()
@@ -46,12 +66,16 @@ func BenchmarkingConfigs(file string, profile string, iterations int) {
 		Log:    logger,
 		WalDir: walDir,
 	}
-	basicManager := NewBasicManager(BasicManagerConfig{InstanceRestartBackoff: time.Minute}, logger, fakeAgent.newBenchmarkInstance)
-	modalManager, err := NewModalManager(prometheus.DefaultRegisterer, logger, basicManager, "shared")
+	basicManager := NewBasicManager(DefaultBasicManagerConfig, logger, fakeAgent.newBenchmarkInstance)
+	modalManager, err := NewModalManager(prometheus.NewRegistry(), logger, basicManager, ModeShared)
+
+	require.NoError(b, err)
+	defer modalManager.Stop()
+
 	if err != nil {
-		level.Error(logger).Log("err", err)
+		err := level.Error(logger).Log("err", err)
+		require.NoError(b, err)
 	}
-	// Occasionally a manager will throw an error if there isnt a slight delay
 	sb.WriteString("id, time in ms \n")
 	for i := 0; i < iterations; i++ {
 		globalConfig := getBenchmarkGlobalConfig()
@@ -61,42 +85,83 @@ func BenchmarkingConfigs(file string, profile string, iterations int) {
 		start := time.Now()
 		err := modalManager.ApplyConfig(cfg)
 		duration := time.Since(start)
+		println(fmt.Sprintf("apply took %s", duration))
 		sb.WriteString(fmt.Sprintf("%d , %d \n", i, duration/time.Millisecond))
 		if err != nil {
 			logger.Log("err", err)
 		}
 	}
-	modalManager.Stop()
-	basicManager.Stop()
 
-	ioutil.WriteFile(file, []byte(sb.String()), 0644)
+	err = ioutil.WriteFile(file, []byte(sb.String()), 0644)
+	require.NoError(b, err)
 }
 
-func setupLogger(path string) log.Logger {
-	f, _ := os.Create(path)
-	w := log.NewSyncWriter(f)
-	logger := log.NewLogfmtLogger(w)
-	logger = level.NewFilter(logger, level.AllowNone())
-	level.SquelchNoLevel(true)
-	logger = log.With(logger, "ts", log.DefaultTimestampUTC)
-	return logger
+func benchmarkingBulkConfigs(b *testing.B, file string, profile string, iterations int) {
+	err := os.RemoveAll(profile)
+	if err != nil {
+		return
+	}
+	profileio, err := os.Create(profile)
+	require.NoError(b, err)
+	err = pprof.StartCPUProfile(profileio)
+	require.NoError(b, err)
+	defer pprof.StopCPUProfile()
+	var sb = strings.Builder{}
+	walDir, _ := ioutil.TempDir(os.TempDir(), "wal*")
+	b.Cleanup(func() {
+		os.RemoveAll(walDir)
+		require.NoError(b, err)
+	})
+	logger := log.NewNopLogger()
+	testServer, closeFunc, _ := getBenchmarkServer()
+	defer closeFunc()
+	var fakeAgent = &FakeAgent{
+		Log:    logger,
+		WalDir: walDir,
+	}
+	basicManager := NewBasicManager(DefaultBasicManagerConfig, logger, fakeAgent.newBenchmarkInstance)
+	modalManager, err := NewModalManager(prometheus.NewRegistry(), logger, basicManager, ModeShared)
+
+	require.NoError(b, err)
+	defer modalManager.Stop()
+
+	if err != nil {
+		err := level.Error(logger).Log("err", err)
+		require.NoError(b, err)
+	}
+	sb.WriteString("id, time in ms \n")
+	configs := make([]Config, 0)
+	for i := 0; i < iterations; i++ {
+		globalConfig := getBenchmarkGlobalConfig()
+		cfg := getBenchmarkTestConfig(i, &globalConfig, testServer)
+		cfg.WALTruncateFrequency = time.Hour
+		cfg.RemoteFlushDeadline = time.Hour
+		configs = append(configs, cfg)
+
+	}
+	start := time.Now()
+	err = modalManager.ApplyConfigs(configs)
+	duration := time.Since(start)
+	println(fmt.Sprintf("apply took %s", duration))
+
+	err = ioutil.WriteFile(file, []byte(sb.String()), 0644)
+	require.NoError(b, err)
 }
 
 func getBenchmarkTestConfig(instanceId int, global *GlobalConfig, scrapeAddr string) Config {
-
+	container := fmt.Sprintf("%d", instanceId)
 	scrapeCfg := promconfig.DefaultScrapeConfig
-	scrapeCfg.JobName = "test"
+	scrapeCfg.JobName = container
 	scrapeCfg.ScrapeInterval = global.Prometheus.ScrapeInterval
 	scrapeCfg.ScrapeTimeout = global.Prometheus.ScrapeTimeout
 	scrapeCfg.ServiceDiscoveryConfigs = discovery.Configs{
 		discovery.StaticConfig{{
-			Targets: []model.LabelSet{{
-				model.AddressLabel: model.LabelValue(scrapeAddr),
-			}},
-			Labels: model.LabelSet{},
+			Targets: []model.LabelSet{{model.AddressLabel: model.LabelValue(scrapeCfg.JobName)}},
+			Labels: model.LabelSet{
+				model.LabelName("container"): model.LabelValue(scrapeCfg.JobName),
+			},
 		}},
 	}
-
 	cfg := DefaultConfig
 	cfg.Name = fmt.Sprintf("test %d", instanceId)
 	cfg.ScrapeConfigs = []*promconfig.ScrapeConfig{&scrapeCfg}

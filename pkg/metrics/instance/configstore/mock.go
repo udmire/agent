@@ -12,7 +12,7 @@ type Mock struct {
 	GetFunc    func(ctx context.Context, key string) (instance.Config, error)
 	PutFunc    func(ctx context.Context, c instance.Config) (created bool, err error)
 	DeleteFunc func(ctx context.Context, key string) error
-	AllFunc    func(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error)
+	AllFunc    func(ctx context.Context, keep func(key string) bool) (<-chan []instance.Config, error)
 	WatchFunc  func() <-chan WatchEvent
 	CloseFunc  func() error
 }
@@ -50,7 +50,7 @@ func (s *Mock) Delete(ctx context.Context, key string) error {
 }
 
 // All implements Store.
-func (s *Mock) All(ctx context.Context, keep func(key string) bool) (<-chan instance.Config, error) {
+func (s *Mock) All(ctx context.Context, keep func(key string) bool) (<-chan []instance.Config, error) {
 	if s.AllFunc != nil {
 		return s.AllFunc(ctx, keep)
 	}
