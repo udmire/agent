@@ -91,6 +91,7 @@ func (w *configWatcher) ApplyConfig(cfg Config) error {
 
 func (w *configWatcher) run(ctx context.Context) {
 	defer level.Info(w.log).Log("msg", "config watcher run loop exiting")
+
 	lastReshard := time.Now()
 
 	for {
@@ -210,7 +211,9 @@ Outer:
 			if !ok {
 				break Outer
 			}
-			// Convert the array of configs to watch events and batch them
+			// Convert the array of configs to watchevents and batch them for performance
+			//  deep in the underlying prometheus code it iterates over the passed in configs
+			//  and it is much easier/quicker to do in a batch than singularly
 			events := make([]configstore.WatchEvent, 0)
 			for _, c := range cfg {
 				events = append(events, configstore.WatchEvent{Key: c.Name, Config: c})
@@ -246,62 +249,8 @@ Outer:
 }
 
 func (w *configWatcher) handleEvent(ev configstore.WatchEvent) error {
-	w.mut.Lock()
-	defer w.mut.Unlock()
-
-	if w.stopped {
-		return fmt.Errorf("configWatcher stopped")
-	}
-
-	w.instanceMut.Lock()
-	defer w.instanceMut.Unlock()
-
-	owned, err := w.owns(ev.Key)
-	if err != nil {
-		level.Error(w.log).Log("msg", "failed to see if config is owned. instance will be deleted if it is running", "err", err)
-	}
-
-	var (
-		_, isRunning = w.instances[ev.Key]
-		isDeleted    = ev.Config == nil
-	)
-
-	switch {
-	// Two deletion scenarios:
-	// 1. A config we're running got moved to a new owner.
-	// 2. A config we're running got deleted
-	case (isRunning && !owned) || (isDeleted && isRunning):
-		if isDeleted {
-			level.Info(w.log).Log("msg", "untracking deleted config", "key", ev.Key)
-		} else {
-			level.Info(w.log).Log("msg", "untracking config that changed owners", "key", ev.Key)
-		}
-
-		err := w.im.DeleteConfig(ev.Key)
-		delete(w.instances, ev.Key)
-		if err != nil {
-			return fmt.Errorf("failed to delete: %w", err)
-		}
-
-	case !isDeleted && owned:
-		if err := w.validate(ev.Config); err != nil {
-			return fmt.Errorf(
-				"failed to validate config. %[1]s cannot run until the global settings are adjusted or the config is adjusted to operate within the global constraints. error: %[2]w",
-				ev.Key, err,
-			)
-		}
-
-		if _, exist := w.instances[ev.Key]; !exist {
-			level.Info(w.log).Log("msg", "tracking new config", "key", ev.Key)
-		}
-
-		if err := w.im.ApplyConfig(*ev.Config); err != nil {
-			return fmt.Errorf("failed to apply config: %w", err)
-		}
-		w.instances[ev.Key] = struct{}{}
-	}
-
-	return nil
+	err, _, _ := w.handleEvents([]configstore.WatchEvent{ev})
+	return err
 }
 
 func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) (err error, successfulWatchEvents []configstore.WatchEvent, failedWatchEvents []configstore.WatchEvent) {
