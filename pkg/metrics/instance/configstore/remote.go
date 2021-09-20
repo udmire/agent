@@ -173,6 +173,8 @@ func (r *Remote) watchKV(ctx context.Context, client *RemoteClient) {
 		return
 	}
 
+	// This is a shortcut to access the consul client so we can bundle all the events
+	//   together, instead of one at a time.
 	if client.consul != nil {
 		client.WatchEventsConsul("", ctx, func(bundle WatchBundle) bool {
 			if ctx.Err() != nil {
@@ -182,8 +184,7 @@ func (r *Remote) watchKV(ctx context.Context, client *RemoteClient) {
 			r.configsMut.Lock()
 			defer r.configsMut.Unlock()
 
-			switch {
-			case len(bundle.Events) > 0:
+			if len(bundle.Events) > 0 {
 				r.configsCh <- bundle
 			}
 

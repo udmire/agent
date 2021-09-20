@@ -91,9 +91,6 @@ func (w *configWatcher) ApplyConfig(cfg Config) error {
 
 func (w *configWatcher) run(ctx context.Context) {
 	defer level.Info(w.log).Log("msg", "config watcher run loop exiting")
-	// Run a refresh on running, this is likely better than relying on the config watcher for lots of items
-	//time.Sleep(10 * time.Second)
-	//w.RequestRefresh()
 	lastReshard := time.Now()
 
 	for {
@@ -210,14 +207,15 @@ Outer:
 		case <-ctx.Done():
 			return ctx.Err()
 		case cfg, ok := <-configs:
-			// w.store.All will close configs when all of them have been read.
 			if !ok {
 				break Outer
 			}
+			// Convert the array of configs to watch events and batch them
 			events := make([]configstore.WatchEvent, 0)
 			for _, c := range cfg {
 				events = append(events, configstore.WatchEvent{Key: c.Name, Config: c})
 				keys[c.Name] = struct{}{}
+
 			}
 			w.handleEvents(events)
 
@@ -302,6 +300,7 @@ func (w *configWatcher) handleEvent(ev configstore.WatchEvent) error {
 		}
 		w.instances[ev.Key] = struct{}{}
 	}
+
 	return nil
 }
 
@@ -347,7 +346,7 @@ func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) (err error, s
 			delete(w.instances, ev.Key)
 			if err != nil {
 				failedWatchEvents = append(failedWatchEvents, ev)
-				level.Error(w.log).Log("msg", fmt.Sprintf("failed to delete: %succesfulApplied", err))
+				level.Error(w.log).Log("msg", fmt.Sprintf("failed to delete: %s", ev.Key))
 			} else {
 				successfulWatchEvents = append(successfulWatchEvents, ev)
 			}
@@ -355,7 +354,7 @@ func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) (err error, s
 		case !isDeleted && owned:
 			if err := w.validate(ev.Config); err != nil {
 				failedWatchEvents = append(failedWatchEvents, ev)
-				level.Error(w.log).Log("msg", fmt.Sprintf("failed to validate config. %[1]succesfulApplied cannot run until the global settings are adjusted or the config is adjusted to operate within the global constraints. error: %[2]succesfulApplied",
+				level.Error(w.log).Log("msg", fmt.Sprintf("failed to validate config. %s cannot run until the global settings are adjusted or the config is adjusted to operate within the global constraints. error: %s",
 					ev.Key, err))
 			}
 
@@ -378,7 +377,7 @@ func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) (err error, s
 
 	level.Info(w.log).Log("msg", "ending apply configs")
 
-	return nil, successfulWatchEvents, failedWatchEvents
+	return err, successfulWatchEvents, failedWatchEvents
 }
 
 // Stop stops the configWatcher. Cannot be called more than once.

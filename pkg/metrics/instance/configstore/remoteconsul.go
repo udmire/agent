@@ -105,15 +105,6 @@ func (r *RemoteClient) WatchEventsConsul(prefix string, ctx context.Context, f f
 
 }
 
-func NewBackoff(ctx context.Context, cfg BackoffConfig) *Backoff {
-	return &Backoff{
-		cfg:          cfg,
-		ctx:          ctx,
-		nextDelayMin: cfg.MinBackoff,
-		nextDelayMax: doubleDuration(cfg.MinBackoff, cfg.MaxBackoff),
-	}
-}
-
 type Backoff struct {
 	cfg          BackoffConfig
 	ctx          context.Context
@@ -127,16 +118,6 @@ type BackoffConfig struct {
 	MinBackoff time.Duration `yaml:"min_period"`  // start backoff at this level
 	MaxBackoff time.Duration `yaml:"max_period"`  // increase exponentially to this level
 	MaxRetries int           `yaml:"max_retries"` // give up after this many; zero means infinite retries
-}
-
-func doubleDuration(value time.Duration, max time.Duration) time.Duration {
-	value = value * 2
-
-	if value <= max {
-		return value
-	}
-
-	return max
 }
 
 // AllConsul is ONLY usable when consul is the keystore. This is a performance improvement in using the client directly
