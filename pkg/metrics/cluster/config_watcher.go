@@ -305,20 +305,24 @@ func (w *configWatcher) handleEvent(ev configstore.WatchEvent) error {
 	return nil
 }
 
-func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) error {
+func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) (err error, successfulWatchEvents []configstore.WatchEvent, failedWatchEvents []configstore.WatchEvent) {
 	w.mut.Lock()
 	defer w.mut.Unlock()
 
 	if w.stopped {
-		return fmt.Errorf("configWatcher stopped")
+		return fmt.Errorf("configWatcher stopped"), nil, evs
 	}
 
 	w.instanceMut.Lock()
 	defer w.instanceMut.Unlock()
 
+	failedWatchEvents = make([]configstore.WatchEvent, 0)
+	successfulWatchEvents = make([]configstore.WatchEvent, 0)
+	evConfigMap := make(map[*instance.Config]configstore.WatchEvent, 0)
 	ownedConfigs := make([]instance.Config, 0)
 	for _, ev := range evs {
 		owned, err := w.owns(ev.Key)
+		evConfigMap[ev.Config] = ev
 		if err != nil {
 			level.Error(w.log).Log("msg", "failed to see if config is owned. instance will be deleted if it is running", "err", err)
 		}
@@ -342,15 +346,17 @@ func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) error {
 			err := w.im.DeleteConfig(ev.Key)
 			delete(w.instances, ev.Key)
 			if err != nil {
-				return fmt.Errorf("failed to delete: %w", err)
+				failedWatchEvents = append(failedWatchEvents, ev)
+				level.Error(w.log).Log("msg", fmt.Sprintf("failed to delete: %succesfulApplied", err))
+			} else {
+				successfulWatchEvents = append(successfulWatchEvents, ev)
 			}
 
 		case !isDeleted && owned:
 			if err := w.validate(ev.Config); err != nil {
-				return fmt.Errorf(
-					"failed to validate config. %[1]s cannot run until the global settings are adjusted or the config is adjusted to operate within the global constraints. error: %[2]w",
-					ev.Key, err,
-				)
+				failedWatchEvents = append(failedWatchEvents, ev)
+				level.Error(w.log).Log("msg", fmt.Sprintf("failed to validate config. %[1]succesfulApplied cannot run until the global settings are adjusted or the config is adjusted to operate within the global constraints. error: %[2]succesfulApplied",
+					ev.Key, err))
 			}
 
 			if _, exist := w.instances[ev.Key]; !exist {
@@ -362,12 +368,17 @@ func (w *configWatcher) handleEvents(evs []configstore.WatchEvent) error {
 		}
 	}
 	level.Info(w.log).Log("msg", "starting apply configs")
-	if err := w.im.ApplyConfigs(ownedConfigs); err != nil {
-		return fmt.Errorf("failed to apply config: %w", err)
+	err, succesfulApplied, failedApplied := w.im.ApplyConfigs(ownedConfigs)
+	for _, v := range succesfulApplied {
+		successfulWatchEvents = append(successfulWatchEvents, evConfigMap[&v])
 	}
+	for _, v := range failedApplied {
+		failedWatchEvents = append(failedWatchEvents, evConfigMap[&v])
+	}
+
 	level.Info(w.log).Log("msg", "ending apply configs")
 
-	return nil
+	return nil, successfulWatchEvents, failedWatchEvents
 }
 
 // Stop stops the configWatcher. Cannot be called more than once.

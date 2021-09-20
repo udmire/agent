@@ -616,7 +616,6 @@ func (i *Instance) UpdateConfigs(configs []Config) (err error) {
 			discoveryConfigs[v.JobName] = v.ServiceDiscoveryConfigs
 		}
 	}
-	// MRD here is the entry point from out system
 	err = i.discovery.Manager.ApplyConfig(discoveryConfigs)
 	if err != nil {
 		return fmt.Errorf("failed applying configs to discovery manager: %w", err)

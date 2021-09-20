@@ -68,15 +68,16 @@ type ModalManager struct {
 	wrapped, active Manager
 }
 
-func (m *ModalManager) ApplyConfigs(configs []Config) error {
+func (m *ModalManager) ApplyConfigs(configs []Config) (lastError error, successful []Config, failed []Config) {
 	m.mut.Lock()
 	defer m.mut.Unlock()
 
-	if err := m.active.ApplyConfigs(configs); err != nil {
-		return err
+	err, successful, failed := m.active.ApplyConfigs(configs)
+	if len(failed) > 0 {
+		level.Error(m.log).Log("msg", fmt.Sprintf("number of configs failed %d", len(failed)))
 	}
 
-	for _, c := range configs {
+	for _, c := range successful {
 		if _, existingConfig := m.configs[c.Name]; !existingConfig {
 			m.currentActiveConfigs.Inc()
 			m.changedConfigs.WithLabelValues("created").Inc()
@@ -86,8 +87,7 @@ func (m *ModalManager) ApplyConfigs(configs []Config) error {
 
 		m.configs[c.Name] = c
 	}
-
-	return nil
+	return err, successful, failed
 }
 
 // NewModalManager creates a new ModalManager.
@@ -141,7 +141,7 @@ func (m *ModalManager) SetMode(newMode Mode) error {
 	case ModeDistinct:
 		m.active = m.wrapped
 	case ModeShared:
-		m.active = NewGroupManager(m.wrapped)
+		m.active = NewGroupManager(m.wrapped, m.log)
 	default:
 		panic("unknown mode " + m.mode)
 	}
