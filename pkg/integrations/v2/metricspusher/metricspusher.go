@@ -1,7 +1,6 @@
-// Package agent is an "example" integration that has very little functionality,
-// but is still useful in practice. The Agent integration re-exposes the Agent's
-// own metrics endpoint and allows the Agent to scrape itself.
-package agent
+// Package metricspusher is an example integration that pushes a test metric
+// every 5 seconds.
+package metricspusher
 
 import (
 	"context"
