@@ -27,5 +27,6 @@ import (
 	// v2 integrations
 	//
 
-	_ "github.com/grafana/agent/pkg/integrations/v2/agent" // register agent
+	_ "github.com/grafana/agent/pkg/integrations/v2/agent"         // register agent
+	_ "github.com/grafana/agent/pkg/integrations/v2/metricspusher" // register metricspusher
 )
