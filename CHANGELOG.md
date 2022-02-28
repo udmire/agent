@@ -9,7 +9,15 @@
 
 - [ENHANCEMENT] Upgrade to loki v2.4.2. The following metrics will now be prefixed with `agent_dskit_` instead of `cortex_`: `cortex_kv_request_duration_seconds`, `cortex_member_consul_heartbeats_total`, `cortex_member_ring_tokens_owned`, `cortex_member_ring_tokens_to_own`, `cortex_ring_member_ownership_percent`, `cortex_ring_members`, `cortex_ring_oldest_member_timestamp`, `cortex_ring_tokens_owned`, `cortex_ring_tokens_total`. (@rlankfo)
 
+- [ENHANCEMENT] Use grafana-agent/v2 Tanka Jsonnet to generate K8s manifests (@hjet)
+
+- [ENHANCEMENT] Replace agent-bare.yaml K8s sample Deployment with StatefulSet (@hjet)
+
+- [ENHANCEMENT] Make agent-traces.yaml namespace a template-friendly variable (@hjet)
+
 - [FEATURE] Added config read API support to GrafanaAgent Custom Resource Definition.
+
+- [BUGFIX] Disable `machine-id` journal vol by default in sample logs manifest (@hjet)
 
 # v0.23.0 (2022-01-13)
 
